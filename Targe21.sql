@@ -1482,6 +1482,201 @@ group by Name
 
 select * from vTotalSalesByProduct
 
--- harjutus 41 j'ime pooleli
+create unique clustered index UIX_vTotalSalesByProduct_Name
+on vTotalSalesByProduct(Name)
+-- paneb selle view tähestikulisse järjestusse
 
 -- 6 SQL tund
+
+
+--- view piirangud
+
+create view vEmployeeDetails
+@Gender nvarchar(20)
+as
+Select Id, FirstName, Gender, DepartmentId
+from Employees
+where Gender = @Gender
+
+--- vaatesse ie saa kaasa panan parameetreid e antud juhul Gender
+
+create function fnEmployeeDetails(@Gender nvarchar(20))
+returns table
+as return
+(Select Id, FirstName, Gender, DepartmentId
+from Employees where Gender = @Gender)
+
+--funktsiooni esile kutsumine koos parameetriga
+select * from fnEmployeeDetails('male')
+
+--- order by kasutamine
+create view vEmployeeDetailsSorted
+as 
+select Id, FirstName, Gender, DepartmentId
+from Employees
+order by Id
+
+-- order by-d ei saa kasutada
+
+--- temp table kasutamine
+
+create table ##TestTempTable(Id int, FirstName nvarchar(20), Gender nvarchar(10))
+
+insert into ##TestTempTable values(101, 'Martin', 'Male')
+insert into ##TestTempTable values(102, 'Joe', 'Female')
+insert into ##TestTempTable values(103, 'Pam', 'Female')
+insert into ##TestTempTable values(104, 'James', 'Male')
+-- sisestame andmed
+
+create view vOnTempTable
+as
+select Id, FirstName, Gender
+from ##TestTempTable
+
+-- temp table-s ei saa kasutada view-d
+
+-- Triggerid
+
+-- DML trigger
+--- kokku on kolme tüüpi: DML, DDL ja LOGON
+
+--- trigger on stored procedure eriliik, mis automaatselt käivitub, kui mingi tegevus 
+--- peaks andmebaasis aset leidma
+
+--- DML - data manipulation language
+--- DML-i põhilised käsklused: insert, update ja delete
+
+-- DML triggereid saab klasifitseerida  kahte tüüpi:
+-- 1. After trigger (kutsutakse ka FOR triggeriks)
+-- 2. Instead of trigger (selmet trigger e selle asemel trigger)
+
+--- after trigger käivitub peale sündmust, kui kuskil on tehtud insert, update ja delete
+
+-- kasutame Employees tabelit
+
+
+--loome uue tabeli
+
+create table EmployeeAudit
+(
+Id int identity(1, 1) primary key,
+AuditData nvarchar(1000)
+)
+
+-- peale iga töötaja sisestamist tahame teada saada töötaja Id-d, päeva ning aega(millal sisestati)
+-- kõik andmed tulevad EmployeeAudit tabelisse
+
+create trigger trEmployeeForInsert
+on Employees
+for insert
+as begin
+Declare @Id int
+select @Id = Id from inserted
+insert into EmployeeAudit
+values ('New employee with Id = ' + CAST(@Id as nvarchar(5)) + ' is added at ' 
++ CAST(GETDATE() as nvarchar(20)))
+end
+
+
+select * from Employees
+
+insert into Employees values (11, 'Male', 3000, 1, 3, 'Bob', 'Blob', 'Bomb', 'bob@bomb.com')
+
+select * from EmployeeAudit
+
+--- delete trigger
+create trigger trEmployeeForDelete
+on Employees
+for delete
+as begin
+	declare @Id int
+	select @Id = Id from deleted
+
+	insert into EmployeeAudit
+	values('An existing employee with Id =  ' + cast(@Id as nvarchar(5)) + ' is deleted at '
+	+ CAST(GETDATE() as nvarchar(20)))
+end
+
+delete from Employees where Id = 11
+
+select * from EmployeeAudit
+
+--- update trigger
+
+create trigger trEmployeeForUpdate
+on Employees
+for update
+as begin
+	declare @Id int
+	declare @OldGender nvarchar(20), @NewGender nvarchar(20)
+	declare @OldSalary int, @NewSalary int
+	declare @OldDepartmetnId int, @NewDepartmetnId int
+	declare @OldManagerId int, @NewManagerId int
+	declare @OldFirstName nvarchar(20), @NewFirstName nvarchar(20)
+	declare @OldMiddleName nvarchar(20), @NewMiddleName nvarchar(20)
+	declare @OldLastName nvarchar(20), @NewLastName nvarchar(20)
+	declare @OldEmail nvarchar(50), @NewEmail nvarchar(50)
+
+	declare @AuditString nvarchar(1000)
+
+	select * into #TempTable
+	from inserted
+
+	while(exists(select Id from #TempTable))
+	begin
+		set @AuditString = ''
+
+		select top 1 @Id = Id, @NewGender = Gender,
+		@NewSalary = Salary, @NewDepartmetnId = DepartmentId,
+		@NewManagerId = ManagerId, @NewFirstName = FirstName,
+		@NewMiddleName = MiddleName, @NewLastName = LastName,
+		@NewEmail = Email
+
+		@OldGender = Gender,
+		@OldSalary = Salary, @OldDepartmetnId = DepartmentId,
+		@OldManagerId = ManagerId, @OldFirstName = FirstName,
+		@OldMiddleName = MiddleName, @OldLastName = LastName,
+		@OldEmail = Email
+		from deleted where Id = @Id
+
+		set @AuditString = 'Employee with Id = ' + CAST(@Id as nvarchar(4)) + 'changed'
+		if(@OldGender <> @NewGender)
+			set @AuditString = @AuditString + ' Gender from ' + @OldGender + ' to ' +
+			@NewGender
+
+		if(@OldSalary <> @NewSalary)
+			set @AuditString = @AuditString + ' Salary from ' + cast(@OldSalary as nvarchar(20)) 
+			+ ' to ' + cast(@NewSalary as nvarchar(10))
+
+		if(@OldDepartmetnId <> @NewDepartmetnId)
+			set @AuditString = @AuditString + ' DepartmentId from ' + cast(@OldDepartmetnId as nvarchar(20)) 
+			+ ' to ' + cast(@NewDepartmetnId as nvarchar(10))
+
+		if(@OldManagerId <> @NewManagerId)
+			set @AuditString = @AuditString + ' ManagerId from ' + cast(@OldManagerId as nvarchar(20)) 
+			+ ' to ' + cast(@NewManagerId as nvarchar(10))
+
+		if(@OldFirstName <> @NewFirstName)
+			set @AuditString = @AuditString + ' Firstname from ' + @OldFirstName + ' to ' +
+			@NewFirstName
+
+		if(@OldMiddleName <> @NewMiddleName)
+			set @AuditString = @AuditString + ' Middlename from ' + @OldMiddleName + ' to ' +
+			@NewMiddleName
+
+		if(@OldLastName <> @NewLastName)
+			set @AuditString = @AuditString + ' Lastname from ' + @OldLastName + ' to ' +
+			@NewLastName
+
+		if(@OldEmail <> @NewEmail)
+			set @AuditString = @AuditString + ' Email from ' + @OldEmail + ' to ' +
+			@NewEmail
+
+end
+end
+
+update Employees set FirstName = 'Bob', Salary = 3000, MiddleName = 'Blob'
+where Id = 10
+
+select * from Employees
+select * from EmployeeAudit
