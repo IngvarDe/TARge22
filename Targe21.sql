@@ -2210,3 +2210,394 @@ as PivotTable
 
 --- 55 harjutus
 --- 8 SQL tund
+
+--- transactions
+
+-- transaction jälgib järgmisi samme:
+-- 1. selle algus
+-- 2. käivitab DB käske
+-- 3. kontrollib vigu. Kui on viga, siis taastab algse oleku
+
+create table MailingAddress
+(
+	Id int not null primary key,
+	EmployeeNumber int,
+	HouseNumber nvarchar(50),
+	StreetAddress nvarchar(50),
+	City nvarchar(10),
+	PostalCode nvarchar(20)
+)
+
+insert into MailingAddress 
+values(1, 101, '#10', 'King Street', 'Londoon', 'CR27DW')
+
+create table PhysicalAddress
+(
+	Id int not null primary key,
+	EmployeeNumber int,
+	HouseNumber nvarchar(50),
+	StreetAddress nvarchar(50),
+	City nvarchar(10),
+	PostalCode nvarchar(20)
+)
+
+insert into PhysicalAddress 
+values(1, 101, '#10', 'King Street', 'Londoon', 'CR27DW')
+
+
+create proc spUpdateAddress
+as begin
+	begin try
+		begin transaction
+			update MailingAddress set City = 'LONDON'
+			where MailingAddress.Id = 1 and EmployeeNumber = 101
+
+			update PhysicalAddress set City = 'LONDON'
+			where PhysicalAddress.Id = 1 and EmployeeNumber = 101
+		commit transaction
+	end try
+	begin catch
+		rollback tran
+	end catch
+end
+
+-- käivitame sp
+spUpdateAddress
+
+select * from MailingAddress
+select * from PhysicalAddress
+
+-- muudame sp nimega spUpdateAddress
+alter proc spUpdateAddress
+as begin
+	begin try
+		begin transaction
+			update MailingAddress set City = 'LONDON 12'
+			where MailingAddress.Id = 1 and EmployeeNumber = 101
+
+			update PhysicalAddress set City = 'LONDON LONDON'
+			where PhysicalAddress.Id = 1 and EmployeeNumber = 101
+		commit transaction
+	end try
+	begin catch
+		rollback tran
+	end catch
+end
+
+-- käivitame sp
+spUpdateAddress
+
+select * from MailingAddress
+select * from PhysicalAddress
+
+-- kui teine uuendus ei lähe läbi, siis esimene ei lähe ka käbi
+-- kõik uuendused peavad läbi minema
+
+
+--- transaction ACID test
+
+-- edukas transaction peab läbima ACID testi:
+-- A - atomic e aatomlikus
+-- C - consistent e järjepidevus
+-- I - isolated e isoleeritus
+-- D - durable e vastupidav
+
+--- Atomic - kõik tehingud transactionis on kas edukalt täidetud või need 
+-- lükatakse tagasi. Nt, mõlemad käsud peaksid alati õnnesutma. Andmebaas 
+-- teeb sellisel juhul: võtab esimese update tagasi ja veeretab selle algasendisse
+-- e taastab algsed andmed
+
+--- Consistent - kõik transactioni puudutavad andmed jäetakse loogiliselt 
+-- järjepidevasse olekusse. Nt, kui laos saadaval olevaid esemete hulka 
+-- vähendatakse, siis tabelis peab olema vastav kanne. Inventuur ei saa
+-- lihtsalt kaduda
+
+--- Isolated - transaction peab andmeid mõjutama, sekkumata teistesse
+-- samaaegsetesse transactionitesse. See takistab andmete muutmist, mis 
+-- põhinevad sidumata tabelitel. Nt, muudatused kirjas, mis hiljem tagasi 
+-- muudetakse. Enamik DB-d kasutab tehingute isoleerimise säilitamiseks 
+-- lukustamist
+
+--- Durable - kui muudatus on tehtud, siis see on püsiv. Kui süsteemiviga või
+-- voolukatkestus ilmneb enne käskude komplekti valmimist, siis tühistatkse need 
+-- käsud ja andmed taastakse algsesse olekusse. Taastamine toimub peale 
+-- süsteemi taaskäivitamist.
+
+
+-- subqueries
+-- tabel tühjaks
+truncate table Product
+truncate table ProductSales
+
+create table Product
+(
+Id int identity primary key,
+Name nvarchar(50),
+Description nvarchar(250)
+)
+
+create table ProductSales
+(
+Id int primary key identity,
+ProductId int foreign key references Product(Id),
+UnitPrice int,
+QuantitySold int
+)
+
+insert into Product values (1, 'TV', '52 inch black color LCD TV')
+insert into Product values (2, 'Laptop', 'Very thin black color laptop')
+insert into Product values (3, 'Desktop', 'HP high performance desktop')
+
+insert into ProductSales values(3, 450, 5)
+insert into ProductSales values(2, 250, 7)
+insert into ProductSales values(3, 450, 4)
+insert into ProductSales values(3, 450, 9)
+
+select * from Product
+select * from ProductSales
+
+-- kirjutame päringu, mis annab infot müümata toodetest
+select Id, Name, Description
+from Product
+where Id not in (select distinct ProductId from ProductSales)
+
+-- enamus juhtudel saab subqueriet asendada JOIN-ga
+-- teeme sama päringu JOIN-ga
+select Product.Id, Name, Description
+from Product
+left join ProductSales
+on Product.Id = ProductSales.ProductId
+where ProductSales.ProductId is null
+
+
+-- teeme subqueri, kus kasutame select-i. Kirjutame päringu, kus
+-- saame teada NAME ja TotalQuantity veeru andemeid
+
+select Name,
+(select sum(QuantitySold) from ProductSales where ProductId = Product.Id) as
+[Total Quantity]
+from Product
+order by Name
+
+-- sama tulemus JOIN-ga
+select Name, SUM(QuantitySold) as TotalQuantity
+from Product
+left join ProductSales
+on Product.Id = ProductSales.ProductId
+group by Name
+order by Name
+
+--- subqueryt saab subquery sisse panna
+-- subquerid on alati sulgudes ja neid nimetatakse sisemisteks päringuteks
+
+---- rohkete andmetega testimise tabel
+
+truncate table Product
+truncate table ProductSales
+
+create table Product
+(
+Id int identity primary key,
+Name nvarchar(50),
+Description nvarchar(250)
+)
+
+create table ProductSales
+(
+Id int primary key identity,
+ProductId int foreign key references Product(Id),
+UnitPrice int,
+QuantitySold int
+)
+
+--- sisestame näidisandmed Product tabelisse:
+declare @Id int
+set @Id = 1
+while(@Id <= 300000)
+begin
+	insert into Product values('Product - ' + cast(@Id as nvarchar(20)),
+	'Product - ' + cast(@Id as nvarchar(20)) + ' Description')
+
+	print @Id
+	set @Id = @Id + 1
+end
+
+declare @RandomProductId int
+declare @RandomUnitPrice int
+declare @RandomQuantitySold int
+
+-- ProductId
+declare @LowerLimitForProductId int
+declare @UpperLimitForProductId int
+
+set @LowerLimitForProductId = 1
+set @UpperLimitForProductId = 100000
+
+--UnitPrice
+declare @LowerLimitForUnitPrice int
+declare @UpperLimitForUnitPrice int
+
+set @LowerLimitForUnitPrice = 1
+set @UpperLimitForUnitPrice = 100
+
+--QuantitySold
+declare @LowerLimitForQuantitySold int
+declare @UpperLimitForQuantitySold int
+
+set @LowerLimitForQuantitySold = 1
+set @UpperLimitForQuantitySold = 10
+
+declare @Counter int
+set @Counter = 1
+
+while(@Counter <= 450000)
+begin
+	select @RandomProductId = round(((@UpperLimitForProductId -
+	@LowerLimitForProductId) * RAND() + @LowerLimitForProductId), 0)
+
+	select @RandomUnitPrice = round(((@UpperLimitForUnitPrice -
+	@LowerLimitForUnitPrice) * RAND() + @LowerLimitForUnitPrice), 0)
+
+	select @RandomQuantitySold = round(((@UpperLimitForQuantitySold -
+	@LowerLimitForQuantitySold) * RAND() + @LowerLimitForQuantitySold), 0)
+
+	insert into ProductSales
+	values(@RandomProductId, @RandomUnitPrice, @RandomQuantitySold)
+
+	print @Counter
+	set @Counter = @Counter + 1
+end
+
+
+select * from Product
+select * from ProductSales
+
+--- võrdleme subquerit ja JOIN-i
+
+select Id, Name, Description
+from Product
+where Id in
+(
+select Product.Id from ProductSales
+)
+--- 300 000 rida 2 sekundiga
+
+-- teeme cache puhtaks, et uut päringut ei oleks kuskile vahemällu salvestatud
+checkpoint;
+go
+dbcc DROPCLEANBUFFERS; --- puhastab päringu cache-i
+go
+dbcc FREEPROCCACHE;  -- puhastab täitva planeeritud cache-i
+go
+
+-- teeme sama tabeli peale inner join päringu
+select distinct Product.Id, Name, Description
+from Product
+inner join ProductSales
+on Product.Id = ProductSales.ProductId
+--- päring tehti 1 sekundaiga
+-- teeme cache puhtaks
+
+select Id, Name, Description
+from Product
+where not exists(select * from ProductSales where ProductId = Product.Id)
+--- sain 201048 rida ja 1 sekundiga
+-- teeme vahemälu puhtaks
+
+-- kasutame join-i
+select Product.Id, Name, Description
+from Product
+left join ProductSales
+on Product.Id = ProductSales.ProductId
+where ProductSales.ProductId is null
+
+---- CURSOR-d
+
+--- realtsiooniliste DB-de haldussüsteemid saavad väga hästi hakkama 
+--- SETS-ga. SETS lubab mitut päringut kombineerida üheks tulemuseks.
+--- Sinna alla käivad UNION, INTERSECT ja EXCEPT.
+
+update ProductSales set UnitPrice = 50 where ProductSales.ProductId = 101
+
+--- kui on vaja rea kaupa andmeid töödelda, siis kõige parem oleks kasutada 
+--- Cursoreid. Samas on need jõudlusele halvad ja võimalusel vältida. 
+--- Soovitav oleks kasutada JOIN-i.
+
+-- Cursorid jagunevad omakorda neljaks:
+-- 1. Forward-Only e edasi-ainult
+-- 2. Static e staatilised
+-- 3. Keyset e võtmele seadistatud
+-- 4. Dynamic e dünaamiline
+
+-- Cursori näide:
+ if the ProductName = 'Product - 55', set UnitPrice to 55
+
+ --------------------------
+ declare @ProductId int
+ -- deklareerime cursori 
+ declare ProductIdCursor cursor for
+ select ProductId from ProductSales
+ -- open avaldusega täidab select avaldust
+ -- ja sisestab tulemuse
+ open ProductIdCursor
+
+ fetch next from ProductIdCursor into @ProductId
+--- kui tulemuses on veel ridu, siis @@FETCH_STATUS on 0
+ while(@@FETCH_STATUS = 0)
+ begin
+	declare @ProductName nvarchar(50)
+	select @ProductName = Name from Product where Id = @ProductId
+
+	if(@ProductName = 'Product - 55')
+	begin
+		update ProductSales set UnitPrice = 55 where ProductId = @ProductId
+	end
+
+	else if(@ProductName = 'Product - 65')
+	begin
+		update ProductSales set UnitPrice = 65 where ProductId = @ProductId
+	end
+
+	else if(@ProductName = 'Product - 1000')
+	begin
+		update ProductSales set UnitPrice = 1000 where ProductId = @ProductId
+	end
+
+	fetch next from ProductIdCursor into @ProductId
+end
+-- vabastab rea seadistuse e suleb cursori
+close ProductIdCursor
+-- vabastab ressursid, mis on seotud cursoriga
+deallocate ProductIdCursor
+
+
+--- vaatame, kas read on uuendatud
+select Name, UnitPrice
+from Product join
+ProductSales on Product.Id = ProductSales.ProductId
+where(Name = 'Product - 55' or Name = 'Product - 65' or Name = 'Product - 1000')
+
+
+--- asendame cursorid JOIN-ga
+update ProductSales
+set UnitPrice = 
+	case
+		when Name = 'Product - 55' Then 155
+		when Name = 'Product - 65' Then 165
+		when Name like 'Product - 1000' Then 10001
+	end
+from ProductSales
+join Product
+on Product.Id = ProductSales.ProductId
+where Name = 'Product - 55' or Name = 'Product - 65' or
+Name like 'Product - 1000'
+
+-- vaatame tulemust
+select Name, UnitPrice
+from Product join
+ProductSales on Product.Id = ProductSales.ProductId
+where(Name = 'Product - 55' or Name = 'Product - 65' or Name = 'Product - 1000')
+
+
+--- harjutus 64
+--- 9 SQL tund
