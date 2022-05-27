@@ -2601,3 +2601,370 @@ where(Name = 'Product - 55' or Name = 'Product - 65' or Name = 'Product - 1000')
 
 --- harjutus 64
 --- 9 SQL tund
+
+--- tabelite info
+
+-- nimekiri tabelitest
+select * from SYSOBJECTS where xtype = 'S'
+
+select * from sys.tables
+--- nimekiri tabelitest ja view-st
+select * from INFORMATION_SCHEMA.TABLES
+
+-- kui soovid erinevaid objektitüüpe vaadata, siis kasuta XTYPE süntaksit
+select distinct XTYPE from sysobjects
+
+-- IT - internal table
+-- P - stored procedure
+-- PK - primary key constraint
+-- S - system table
+-- SQ - service queue
+-- U - user table
+-- V - view
+
+
+--- skriptide uuesti käivitamine
+
+create table Employee
+(
+Id int primary key,
+Name nvarchar(30),
+ManagerId int
+)
+
+--- annab teada, kas selle nimega tabel on juba olemas
+if not exists (select * from INFORMATION_SCHEMA.TABLES where TABLE_NAME = 'Employee')
+begin
+	create table Employee
+	(
+	Id int primary key,
+	Name nvarchar(30),
+	ManagerId int
+	)
+		print 'Table Employee created'
+	end
+	else
+	begin
+		print 'Table Employee already exists'
+end
+
+--- saab kasutada ka sisseehitatud funktsiooni: OBJECT_ID()
+if OBJECT_ID('Employee') is null
+begin
+	print 'Table created'
+end
+else
+begin
+	print 'Table already exists'
+end
+
+--- tahame sama nimega tabeli ära kustutada ja siis uuesti luua
+if OBJECT_ID('Employee') is not null
+begin
+	drop table Employee
+end
+create table Employee
+(
+Id int primary key,
+Name nvarchar(30),
+ManagerId int
+)
+
+alter table Employee
+add Email nvarchar(50)
+
+--- kui teha uuesti käivitatavaks veeru kontrollimist ja loomist
+if not exists(select * from INFORMATION_SCHEMA.COLUMNS where
+COLUMN_NAME = 'Email' and TABLE_NAME = 'Employee' and TABLE_SCHEMA = 'dbo')
+begin
+	alter table Employee
+	add Email nvarchar(50)
+end
+else
+begin
+	print 'Column already exists'
+end
+
+--- kontrollime, kas mingi nimega veerg on olemas
+if COL_LENGTH('Employee', 'Email') is not null
+begin
+	print 'Column already exists'
+end
+else 
+begin
+	print 'Column does not exists'
+end
+
+
+---- MERGE
+--- tutvustati aastal 2008, mis lubab teha sisestamist, uuendamist ja kustutamist
+--- ei pea kasutama mitut käsku
+
+-- merge puhul peab alalti olema vähemalt kaks tabelit:
+-- 1. algallika tabel e source table
+-- 2. sihtmärk tabel e target table
+
+-- ühendab sihttabeli lähtetabeliga ja kasutab mõlemas tabelis ühist veergu
+-- koodinäide:
+merge [TARGET] as T
+using [SOURCE] as S
+	on [JOIN_CONDITIONS]
+when matched then
+	[UPDATE_STATMENT]
+when not matched by target then
+	[INSERT_STATEMENT]
+when not matched by source then
+	[DELETE STATEMENT]
+
+
+
+create table StudentSource
+(
+Id int primary key,
+Name nvarchar(20)
+)
+go
+insert into StudentSource values(1, 'Mike')
+insert into StudentSource values(2, 'Sara')
+go
+create table StudentTarget
+(
+Id int primary key,
+Name nvarchar(20)
+)
+insert into StudentTarget values(1, 'Mike M')
+insert into StudentTarget values(3, 'John')
+go
+
+-- 1. kui leitakse klappiv rida, siis StudentTarget tabel on uuendatud
+-- 2. kui read on StudentSource tabelis olemas, aga neid ei ole StudentTarget-s,
+-- puuduolevad read sisestatakse 
+-- 3. kui read on olemas StudentTarget-s, aga mitte StudentSource-s, siis StudentTarget
+-- tabelis read kustutatakse ära
+merge StudentTarget as T
+using StudentSource as S
+on T.Id = S.Id
+when matched then
+	update set T.Name = S.Name
+when not matched by target then
+	insert (Id, Name) values(S.Id, S.Name)
+when not matched by source then
+	delete;
+
+select * from StudentTarget
+select * from StudentSource
+
+--tabelid sisust tühjaks
+truncate table StudentTarget
+truncate table StudentSource
+
+insert into StudentSource values(1, 'Mike')
+insert into StudentSource values(2, 'Sara')
+go
+insert into StudentTarget values(1, 'Mike M')
+insert into StudentTarget values(3, 'John')
+go
+
+merge StudentTarget as T
+using StudentSource as S
+on T.Id = S.Id
+when matched then
+	update set T.Name = S.Name
+when not matched by target then
+	insert (Id, Name) values(S.Id, S.Name);
+
+
+
+--- transaction-d
+
+-- mis see on?
+-- on rühm käske, mis muudavad DB-s salvestatuid andmeid. Tehingut käsitletakse
+-- ühe tööüksusena. Kas kõik käsud õnnestuvad või mitte. Kui üks tehing sellest ebaõnnestub
+-- siis kõik juba muudetud andmed muudetakse tagasi
+
+
+create table Account
+(
+Id int primary key,
+AccountName nvarchar(25),
+Balance int
+)
+
+insert into Account values(1, 'Mark', 1000)
+insert into Account values(2, 'Mary', 1000)
+
+--- transaction taga, etmõlemad uuendatavad käsud saavad ära tehtud
+
+begin try
+	begin transaction
+		update Account set Balance = Balance - 100 where Id = 1
+		update Account set Balance = Balance + 100 where Id = 2
+	commit transaction
+	print 'Transaction Commited'
+end try
+begin catch
+	rollback tran
+	print 'Transaction rolled back'
+end catch
+
+select * from Account
+
+--- mõned levinumad probleemid:
+-- 1. Dirty read e must lugemine
+-- 2. Lost Updates e kadunud uuendused
+-- 3. Nonreapeatable reads e kordumatud lugemised
+-- 4. Phantom read e fantoom lugmine
+
+--- kõik eelnevad probleemid lahendaks ära, kui lubaksite igal ajal 
+--- korraga ühel kasutajal ühe tehingu teha. Selle tulemusel kõik tehingud
+--- satuvad järjekorda ja neil võib tekkida vajadus kaua oodata, enne
+--- kui võimalus tehingut teha saabub.
+
+--- kui lubada samaaegselt kõõik tehingud ära teha, siis see omakorda tekitab probleeme
+--- Probleemi lahendamiseks pakub MSSQL server erinevaid tehinguisolatsiooni tasemeid,
+--- et tasakaalustada samaaegsete andmete CRUD(create, read, update ja delete) probleeme:
+
+-- 1. read uncommited e lugemine ei ole teostatud
+-- 2. read commited e lugemine tehtud
+-- 3. repeatable read e korduv lugemine
+-- 4. snapshot e kuvatõmmis
+-- 5. serializable e serialiseerimine
+
+--- iga juhtumile tuleb läheneda juhtumipõhiselt
+-- mida vähem valet lugemist tuleb, seda aeglasem
+
+
+--- dirty read näide
+create table Inventory
+(
+Id int identity primary key,
+Product nvarchar(100),
+ItemsInStock int
+)
+go
+insert into Inventory values ('iPhone', 10)
+select * from Inventory
+
+-- 1. käsklus
+-- 1 transaction
+begin tran
+update Inventory set ItemsInStock = 9 where Id = 1
+-- kliendile tuleb arve
+waitfor delay '00:00:15'
+--- ebapiisav saldojääk, teeb rollback-i
+rollback tran
+
+-- 2. käsklus
+-- samal tegin uu päringuga akna, kus kohe peale 
+-- peale esimest käivitan teise
+--- 2  transaction
+set tran isolation level read uncommitted
+select * from Inventory where Id = 1
+
+-- 3. käsklus
+--- nüüd panen selle käskluse tööle
+select * from Inventory (nolock) where Id = 1
+
+--- muutsin esimese käsuga 9 iPhone peale, aga
+--- ikka on 10 tk.
+
+
+--- Lost update probleem
+select * from Inventory
+
+set tran isolation level repeatable read
+--- tran 1
+begin tran
+declare @ItemsInStock int
+
+select @ItemsInStock = ItemsInStock
+from Inventory where Id = 1
+
+waitfor delay '00:00:10'
+set @ItemsInStock = @ItemsInStock - 1
+
+update Inventory
+set ItemsInStock = @ItemsInStock where Id = 1
+
+print @ItemsInStock
+commit transaction
+
+
+--- samal ajal panen teise transaction-i tööle teisest päringust
+set tran isolation level repeatable read
+begin tran
+declare @ItemsInStock int
+
+select @ItemsInStock = ItemsInStock
+from Inventory where Id = 1
+
+waitfor delay '00:00:1'
+set @ItemsInStock = @ItemsInStock - 2
+
+update Inventory
+set ItemsInStock = @ItemsInStock where Id = 1
+
+print @ItemsInStock
+commit tran
+
+
+--- non repeatable read näide
+
+--- see juhtub, kui üks transaction loeb samu andmeid kaks korda
+--- ja teine transaction uuendab neid andmeid esimese ja 
+--- ja teise käsu vahel esimese transactioni jooksutamise ajal
+
+--- esimene tran
+--set tran isolation level repeatable read
+begin tran
+select  ItemsInStock from Inventory where Id = 1
+
+waitfor delay '00:00:10'
+
+select ItemsInStock from Inventory where Id = 1
+commit tran
+
+--- panen nüüd tran 2 käima
+
+update Inventory set ItemsInStock = 5
+where Id = 1
+
+--- non repeatable read probleemi lahendamiseks kasutatakse tran 1 ees:
+--- set tran isolation level repeatable read
+
+
+---- Phantom read näide
+
+create table Employee
+(
+Id int primary key,
+Name nvarchar(25)
+)
+
+insert into Employee values(1, 'Mark')
+insert into Employee values(3, 'Sara')
+insert into Employee values(100, 'Mary')
+
+--- tran 1
+set tran isolation level serializable
+
+begin tran
+select * from Employee where Id between 1 and 3
+
+waitfor delay '00:00:10'
+select * from Employee where Id between 1 and 3
+commit tran
+
+--- panen kohe teise trani tööle
+insert into Employee 
+values(2, 'Marcus')
+
+--- vastuseks tuleb: Mark ja Sara. Marcust ei näita, aga peaks
+
+--- erinevus korduvlugemisega ja serialiseerimisega
+-- korduv lugemine hoiab ära ainult kordumatud lugemised
+-- serialiseerimine hoiab ära kordumatud lugemised ja
+-- phantom read probleemid
+-- isolatsioonitase tagab, et ühe tehingu loetud andmed ei 
+-- takistaks muid transactioneid
+
