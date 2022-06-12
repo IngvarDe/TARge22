@@ -2290,7 +2290,7 @@ spUpdateAddress
 select * from MailingAddress
 select * from PhysicalAddress
 
--- kui teine uuendus ei lähe läbi, siis esimene ei lähe ka käbi
+-- kui teine uuendus ei lähe läbi, siis esimene ei lähe ka läbi
 -- kõik uuendused peavad läbi minema
 
 
@@ -2968,3 +2968,260 @@ values(2, 'Marcus')
 -- isolatsioonitase tagab, et ühe tehingu loetud andmed ei 
 -- takistaks muid transactioneid
 
+--- DEADLOCK
+
+-- kui andmebaasis tekib ummikseis
+
+create table TableA
+(
+Id int identity primary key,
+Name nvarchar(50)
+)
+go
+Insert into TableA values('Mark')
+go
+create table TableB
+(
+Id int identity primary key,
+Name nvarchar(50)
+)
+go
+Insert into TableB values('Mary')
+
+--- transaction 1
+-- samm nr 1
+begin tran
+UPDATE TableA SET Name = 'Mark Transaction 1' where Id = 1
+
+-- samm nr 3
+UPDATE TableB SET Name = 'Mary Transaction 1' where Id = 1
+
+commit tran
+
+
+-- samm nr 2
+begin tran
+UPDATE TableA SET Name = 'Mark Transaction 2' where Id = 1
+
+-- samm nr 4
+UPDATE TableB SET Name = 'Mary Transaction 2' where Id = 1
+
+commit tran
+truncate table TableB
+
+--- kuidas SQL server tuvastab deadlocki
+--- lukustatakse serveri lõim, mis töötab vaikimisi iga 5 sek järel
+--- et tuvastada ummikuid. Kui leiab deadlocki, siis langeb 
+--- deadlocki intervall 5 sek-lt 100 millisekundini.
+
+--- mis juhtub deadlocki tuvastamisel
+--- tuvastamisel lõpeetab DB-mootor deadlocki ja valib ühe lõime 
+--- ohvriks. Seejärel keeratakse deadlockiohvri tehing tagasi ja 
+--- tagastatakse rakendusele viga 1205. Ohvri tehingtagasitõmbamine
+--- vabastab kõik selle transactioni valduses olevad lukud.
+--- See võimaldab teistel transactionitel blokeringut tühistada ja
+--- edasi liikuda.
+
+--- mis on DEADLOCK_PRIORITY
+--- vaikimisi valib SQL server deadlockiohvri tehingu, mille 
+--- tagasivõtmine kõige odava (võtab vähem ressurssi). Seanside 
+--- prioriteeti saab muuta SET DEADLOCK_PRIORTY
+
+--- DEADLOCK_PRIORTY
+--- 1. vaikimisi on see Normali peal
+--- 2. Saab seadistada LOW, NORMAL ja HIGH peale
+--- 3. saab seadistada ka nr väärtusena -10-st kuni 10-ni
+
+--- Ohvri valimise kriteeriumid
+--- 1. Kui prioriteedid on erinevad, siis kõige madalama tähtsusega valitakse ohvriks
+--- 2. Kui mõlemal sessioonil on sama prioriteet, siis valitakse ohvriks transaction,
+--- mille tagasi viimine on kõige vähem ressurssi nõudev.
+--- 3. Kui mõlemal sessioonil on sama prioriteet ja sama ressursi kulutamine,
+--- siis ohver valitakse juhuslikuse alusel
+
+truncate table TableA
+truncate table TableB
+
+insert into TableA values('Mark')
+insert into TableA values('Ben')
+insert into TableA values('Todd')
+insert into TableA values('Pam')
+insert into TableA values('Sara')
+
+insert into TableB values('Mary')
+
+--- tran 1
+--- samm 1
+begin tran
+update TableA set Name = Name + 
+'Transaction 1' where Id in (1, 2, 3, 4, 5)
+
+--- samm 3
+update TableB set Name = Name + 
+'Transaction 1' where Id = 1
+--- samm 5
+commit tran
+
+---------------
+set deadlock_priority high
+go
+begin tran
+update TableB set Name = 
+Name + 'Transaction 1' where Id = 1
+
+--- samm 4
+update TableA set Name = 
+Name + 'Transaction 1' where Id in (1, 2, 3, 4, 5)
+--- samm 6
+commit tran
+
+truncate table TableA
+truncate table TableB
+
+---- deadlocki logimine
+
+dbcc Traceon(1222, -1)
+
+dbcc TraceStatus(1222, -1)
+
+dbcc TraceOff(1222, -1)
+
+insert into TableA values('Mark')
+insert into TableB values('Mary')
+
+create proc spTransaction1
+as begin
+	begin tran
+	update TableA set Name = 'Mark Transaction 1' where Id = 1
+	waitfor delay '00:00:05'
+	update TableB set Name = 'Mary Transaction 1' where Id = 1
+	commit tran
+end
+
+create proc spTransaction2
+as begin
+	begin tran
+	update TableB set Name = 'Mark Transaction 2' where Id = 1
+	waitfor delay '00:00:05'
+	update TableA set Name = 'Mary Transaction 2' where Id = 1
+	commit tran
+end
+
+exec spTransaction1
+-- errorlogi kuvamine
+execute sp_readerrorlog
+
+
+--- jätkame siin, teeme hääletuna seda tundi
+-- kuidas saada koodi abil 
+-- selleks on meil vaja ]iget objectId, aga hetkel ei ole
+
+select OBJECT_NAME([objectId]) -- ei ole selle infot hetkel
+from sys.partitions
+where hobt_id = 72057594047430656 -- need nr tulid mul 
+--- eelnevast t;;st, kui ise katsetasin, aga hetkel ei 
+--- ole seda seal
+
+---Deadlocki vea käsitlemine try catchiga
+alter proc spTransaction1
+as begin
+	begin tran
+	begin try
+		update TableA set Name = 'Mark Transaction 1' where Id = 1
+		waitfor delay '00:00:05'
+		update TableB set Name = 'Mary Transaction 1' where Id = 1
+
+		commit tran
+		select 'Transaction Successful'
+	end try
+	begin catch
+		-- vaatab, kas see error  deadlocki oma
+		if(ERROR_NUMBER() = 1205)
+		begin
+			select 'Deadlock. Transaction failed. Please retry'
+		end
+
+		rollback
+	end catch
+end
+-- kohe alustame teise samasuguse tegemist, kas j]udsite kirjutada
+-- muutke m[lemaid sp-d
+alter proc spTransaction2
+as begin
+	begin tran
+	begin try
+		update TableB set Name = 'Mary Transaction 2' where Id = 1
+		waitfor delay '00:00:05'
+		update TableA set Name = 'Mark Transaction 2' where Id = 1
+
+		commit tran
+		select 'Transaction Successful'
+	end try
+	begin catch
+		-- vaatab, kas see error  deadlocki oma
+		if(ERROR_NUMBER() = 1205)
+		begin
+			select 'Deadlock. Transaction failed. Please retry'
+		end
+
+		rollback
+	end catch
+end
+-- n[[d k'ivit
+--- esimeses aknas
+spTransaction1
+exec spTransaction1
+execute spTransaction1
+-- ei ole vahet
+--- teises aknas
+spTransaction2
+
+
+--- blokeerivate p'ringute leidmine
+
+begin tran
+update TableA set Name = 'Mark Transaction 1' 
+where Id = 1
+
+--- teise aknasse kirjutame:
+select COUNT(*) from TableA
+delete from TableA where Id = 1
+truncate table TableA
+drop table TableA
+
+
+
+SELECT
+    [s_tst].[session_id],
+    [s_es].[login_name] AS [Login Name],
+    DB_NAME (s_tdt.database_id) AS [Database],
+    [s_tdt].[database_transaction_begin_time] AS [Begin Time],
+    [s_tdt].[database_transaction_log_bytes_used] AS [Log Bytes],
+    [s_tdt].[database_transaction_log_bytes_reserved] AS [Log Rsvd],
+    [s_est].text AS [Last T-SQL Text],
+    [s_eqp].[query_plan] AS [Last Plan]
+FROM
+    sys.dm_tran_database_transactions [s_tdt]
+JOIN
+    sys.dm_tran_session_transactions [s_tst]
+ON
+    [s_tst].[transaction_id] = [s_tdt].[transaction_id]
+JOIN
+    sys.[dm_exec_sessions] [s_es]
+ON
+    [s_es].[session_id] = [s_tst].[session_id]
+JOIN
+    sys.dm_exec_connections [s_ec]
+ON
+    [s_ec].[session_id] = [s_tst].[session_id]
+LEFT OUTER JOIN
+    sys.dm_exec_requests [s_er]
+ON
+    [s_er].[session_id] = [s_tst].[session_id]
+CROSS APPLY
+    sys.dm_exec_sql_text ([s_ec].[most_recent_sql_handle]) AS [s_est]
+OUTER APPLY
+    sys.dm_exec_query_plan ([s_er].[plan_handle]) AS [s_eqp]
+ORDER BY
+    [Begin Time] ASC;
+GO
